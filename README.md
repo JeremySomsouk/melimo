@@ -6,7 +6,7 @@ Mélimo is a lightweight music player written in Rust. Search with Deezer or
 Invidious, build one queue, and control playback from your keyboard. Follow
 synchronized lyrics when Deezer provides them.
 
-**v0.2.0 — release preparation · Linux and macOS · MIT**
+**v0.3.0 — release preparation · Linux and macOS · MIT**
 
 ![Mélimo terminal player with synthetic demo metadata and lyrics](docs/assets/player.png)
 
@@ -54,7 +54,7 @@ cd Melimo
 cargo install --locked --path .
 ```
 
-The commands install the checked-out source version. v0.2.0 is being prepared
+The commands install the checked-out source version. v0.3.0 is being prepared
 and has not been tagged or published. Playback needs an interactive terminal
 and an audio output device. Windows is not a validated target.
 
@@ -118,6 +118,21 @@ enabled, `P` switches between both providers.
 `~/Library/Application Support/melimo/session` on macOS, or
 `$XDG_DATA_HOME/melimo/session` on Linux (default
 `~/.local/share/melimo/session`). See [security](SECURITY.md) for storage protections.
+
+## Continuous audio in v0.3.0
+
+The output device stays open for the terminal session. While a track plays,
+Mélimo prepares the next queued Deezer track in memory, with at most 64 KiB
+of encoded audio in the preparation channel (plus the bounded HTTP chunk and
+provider parsing state). It continues the same response when that track starts.
+There is no disk audio cache. Preparation adds an early request for the next
+track, and is cancelled when the queue changes, playback stops, login refreshes,
+or the app exits. A failed preparation cannot stop the current track.
+
+Decoded PCM buffers are recycled through a bounded channel. These changes aim
+to shorten transitions; they do not guarantee sample-exact gapless playback.
+Invidious uses the shared output engine but is not prefetched. Public-instance
+availability remains experimental and is not a v0.3.0 release gate.
 
 ## Queue, playback and lyrics
 
@@ -207,7 +222,7 @@ in short windows.
 - Now-playing metadata appears in the terminal title and may appear in screenshots.
 
 Automated tests cover both providers, discovery and playback using synthetic data.
-Live public-instance playback for v0.2 remains an acceptance check before release.
+Live Deezer playback remains an acceptance check before the v0.3.0 release.
 See [release validation](docs/RELEASE.md) and [planned work](docs/NEXT_STEPS.md).
 
 ## Development

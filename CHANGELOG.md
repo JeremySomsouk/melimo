@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — Unreleased
+
+- Keep one lazily opened audio output device per terminal session, with recovery
+  on the next playback attempt after a device failure.
+- Prepare the next Deezer track in a bounded 64 KiB encoded channel while the
+  current track plays; reuse that response on promotion without downloading again.
+- Cancel preparation on queue replacement, stop, login refresh and exit. Preparation
+  errors remain isolated from the current track and fall back to a fresh attempt.
+- Recycle decoded PCM buffers through a bounded, nonblocking channel.
+- Focus release acceptance on Deezer; live Invidious availability is not a release gate.
+
+## Earlier unreleased changes
 
 - Require Rust 1.99 and pin development and CI to Rust 1.99.0.
 - Deny compiler warnings in CI using Cargo's warning policy, alongside strict Clippy.
