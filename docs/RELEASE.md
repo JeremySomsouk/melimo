@@ -1,3 +1,46 @@
+# v0.3.0 release preparation
+
+Package: **0.3.0**. No release tag or publication yet.
+
+## Included features
+
+- Persistent lazy audio output shared by successive tracks and seek restarts.
+- Next-track Deezer preparation: one 32 × 2048-byte encoded channel, with
+  backpressure and continuation of the same response on promotion.
+- Queue-sensitive cancellation and isolated preparation failures.
+- Bounded recycling of 4096-sample PCM buffers using a nonblocking return channel.
+
+## Local validation (2026-10-04)
+
+- Rust/Cargo 1.99.0 via the environment's `stable` toolchain (the separately
+  named pinned toolchain had an incomplete Cargo installation).
+- Formatting, strict Clippy and locked tests passed: 89 automated tests;
+  five manual/device tests ignored by default.
+- Locked release build passed; release binary reports `Mélimo 0.3.0`.
+- MP3, AAC, prepared promotion/pause/gain and output-reuse/recovery tests passed against ALSA's null output.
+  This validates the device API path, not audible playback or real unplug events.
+- Live Deezer/macOS acceptance and before/after CPU/memory/latency measurements
+  remain pending. No numerical performance gain is asserted.
+
+## Acceptance before publication
+
+1. Run formatting, strict Clippy, locked tests and locked release build.
+2. Verify `melimo --version` reports 0.3.0.
+3. With an authorized Deezer account, play a queue and check transitions, pause,
+   seek while paused, rapid next-track actions, stop, queue replacement and login refresh.
+4. Check preparation failures do not interrupt current playback; retry the next
+   track normally. Check unplugged output recovery on the next playback attempt.
+5. Compare CPU, peak memory and end-to-next-audio latency against the parent commit
+   on the same machine and network. Record observations without account data.
+6. Validate macOS and Linux real audio before tagging `v0.3.0`.
+
+Automated tests use synthetic bytes and generated tones. Device tests are ignored
+unless an audio device is available. Live Deezer acceptance and performance gains
+must not be claimed from synthetic tests alone. No sample-exact gapless promise.
+Invidious live availability is experimental and is not a release gate.
+
+---
+
 # v0.2.0 release preparation
 
 Package: **0.2.0**. Source preparation only; no release tag or publication yet.

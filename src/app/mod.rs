@@ -18,6 +18,8 @@ fn apply(
     playback: &mut Option<crate::playback::Playback>,
     provider: &Arc<Providers>,
     tx: &mpsc::Sender<Action>,
+    output: &crate::playback::AudioOutput,
+    preparation: &mut crate::playback::Preparation,
 ) -> Option<SearchRequest> {
     let old_id = app.playback_id;
     let volume_changed = matches!(
@@ -46,6 +48,8 @@ fn apply(
                 app.elapsed,
                 app.pause_requested,
                 app.volume.effective(),
+                output.clone(),
+                preparation,
             ));
         }
     } else if matches!(
@@ -54,6 +58,10 @@ fn apply(
     ) {
         *playback = None;
     }
+    let next = matches!(app.playback, PlaybackState::Playing | PlaybackState::Paused)
+        .then(|| app.queue.front())
+        .flatten();
+    preparation.update(provider, next);
     request
 }
 
@@ -66,6 +74,8 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
     let mut table = TableState::default();
     let (tx, mut rx) = mpsc::channel(8);
     let mut playback = None;
+    let output = crate::playback::AudioOutput::default();
+    let mut preparation = crate::playback::Preparation::default();
     let mut job: Option<JoinHandle<()>> = None;
     let mut favorite_job: Option<JoinHandle<()>> = None;
     let mut lyrics_job: Option<JoinHandle<()>> = None;
@@ -79,7 +89,15 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
                 if matches!(action, Action::FavoriteFinished(_)) {
                     favorite_job = None;
                 }
-                apply(&mut app, action, &mut playback, &provider, &tx);
+                apply(
+                    &mut app,
+                    action,
+                    &mut playback,
+                    &provider,
+                    &tx,
+                    &output,
+                    &mut preparation,
+                );
             }
             if lyrics_id.is_some_and(|id| id != app.playback_id) {
                 if let Some(job) = lyrics_job.take() {
@@ -128,6 +146,8 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
                         &mut playback,
                         &provider,
                         &tx,
+                        &output,
+                        &mut preparation,
                     );
                     if let Some(job) = job.take() {
                         job.abort();
@@ -176,7 +196,15 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
                     }
                     continue;
                 }
-                if let Some(request) = apply(&mut app, action, &mut playback, &provider, &tx) {
+                if let Some(request) = apply(
+                    &mut app,
+                    action,
+                    &mut playback,
+                    &provider,
+                    &tx,
+                    &output,
+                    &mut preparation,
+                ) {
                     if let Some(previous) = job.take() {
                         previous.abort();
                     }

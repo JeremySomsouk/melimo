@@ -1,3 +1,13 @@
+# v0.3.0 continuous-audio increment
+
+- [x] Persistent lazy output device with next-attempt recovery after failure.
+- [x] Bounded next-track preparation for Deezer; promote the same response.
+- [x] Cancel on queue changes, stop, login refresh and exit.
+- [x] Recycle PCM buffers without blocking the device callback.
+- [ ] Validate the branch in CI.
+- [ ] Live Deezer/macOS/Linux acceptance and before/after performance measurements.
+- [ ] Tag and publish only after acceptance. Invidious availability is not a gate.
+
 # Mélimo next steps
 
 ## v0.2.0 release preparation
