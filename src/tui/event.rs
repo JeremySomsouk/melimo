@@ -1,3 +1,4 @@
+use super::palette::Palette;
 use crate::app::{
     action::Action,
     state::{App, View},
@@ -5,24 +6,41 @@ use crate::app::{
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::{io, time::Duration};
 
-pub fn read_action(app: &App) -> io::Result<Option<Action>> {
+pub fn read_action(app: &App, palette: &mut Option<Palette>) -> io::Result<Option<Action>> {
     if !event::poll(Duration::from_millis(50))? {
         return Ok(None);
     }
     match event::read()? {
-        Event::Key(key) => Ok(map_key(key, app)),
+        Event::Key(key) => Ok(dispatch_key(key, app, palette)),
         Event::Resize(..) => Ok(Some(Action::Redraw)),
         _ => Ok(None),
     }
 }
 
-fn map_key(key: KeyEvent, app: &App) -> Option<Action> {
+fn dispatch_key(key: KeyEvent, app: &App, palette: &mut Option<Palette>) -> Option<Action> {
     if key.kind == KeyEventKind::Release {
         return None;
     }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return Some(Action::Quit);
+    }
+    if palette.is_some() {
+        return Palette::handle_key(palette, key, app);
+    }
+    if !app.show_help
+        && !app.editing
+        && key.code == KeyCode::Char(':')
+        && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+    {
+        *palette = Some(Palette::default());
+        return Some(Action::Redraw);
+    }
+    map_key(key, app)
+}
+
+fn map_key(key: KeyEvent, app: &App) -> Option<Action> {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
-            KeyCode::Char('c') => Some(Action::Quit),
             KeyCode::Char('u') if app.editing && !app.show_help => Some(Action::ClearQuery),
             _ => None,
         };
@@ -44,7 +62,11 @@ fn map_key(key: KeyEvent, app: &App) -> Option<Action> {
             _ => None,
         };
     }
-    match key.code {
+    shortcut(key.code, app)
+}
+
+pub(super) fn shortcut(code: KeyCode, app: &App) -> Option<Action> {
+    match code {
         KeyCode::Char('q') | KeyCode::Esc => Some(Action::Back),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('/') => Some(Action::FocusSearch),
@@ -58,6 +80,12 @@ fn map_key(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('m') => Some(Action::ToggleMute),
         KeyCode::Char('s') => Some(Action::StopPlayback),
         KeyCode::Char('e') => Some(Action::Enqueue),
+        KeyCode::Char('E') if matches!(app.view, View::Search | View::Queue) => {
+            Some(Action::QueueNext)
+        }
+        KeyCode::Char('J') if app.view == View::Queue => Some(Action::MoveQueued(1)),
+        KeyCode::Char('K') if app.view == View::Queue => Some(Action::MoveQueued(-1)),
+        KeyCode::Char('[') => Some(Action::PreviousTrack),
         KeyCode::Delete if app.view == View::Queue => Some(Action::RemoveQueued),
         KeyCode::Char('l') => Some(Action::ToggleLyrics),
         KeyCode::Char('p') => Some(Action::ShowPlayer),
@@ -83,6 +111,114 @@ fn map_key(key: KeyEvent, app: &App) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn press(code: KeyCode, app: &App, palette: &mut Option<Palette>) -> Option<Action> {
+        dispatch_key(KeyEvent::new(code, KeyModifiers::NONE), app, palette)
+    }
+
+    #[test]
+    fn palette_consumes_text_and_runs_the_selected_command() {
+        let app = App::default();
+        let mut palette = None;
+        assert!(matches!(
+            press(KeyCode::Char(':'), &app, &mut palette),
+            Some(Action::Redraw)
+        ));
+        for ch in "OPEN quEuEé".chars() {
+            assert!(matches!(
+                press(KeyCode::Char(ch), &app, &mut palette),
+                Some(Action::Redraw)
+            ));
+        }
+        assert!(press(KeyCode::Enter, &app, &mut palette).is_none());
+        assert!(palette.is_some());
+        press(KeyCode::Backspace, &app, &mut palette);
+        assert!(matches!(
+            press(KeyCode::Enter, &app, &mut palette),
+            Some(Action::ShowQueue)
+        ));
+        assert!(palette.is_none());
+        assert!(app.query.is_empty());
+    }
+
+    #[test]
+    fn palette_closes_without_changing_the_view_and_leaves_other_modes_alone() {
+        let mut app = App::default();
+        let mut palette = None;
+        press(KeyCode::Char(':'), &app, &mut palette);
+        press(KeyCode::Char('q'), &app, &mut palette);
+        assert!(palette.is_some());
+        assert!(matches!(
+            press(KeyCode::Esc, &app, &mut palette),
+            Some(Action::Redraw)
+        ));
+        assert!(palette.is_none());
+        app.update(Action::FocusSearch);
+        assert!(matches!(
+            press(KeyCode::Char(':'), &app, &mut palette),
+            Some(Action::Insert(':'))
+        ));
+        app.update(Action::Back);
+        app.update(Action::ToggleHelp);
+        assert!(press(KeyCode::Char(':'), &app, &mut palette).is_none());
+        assert!(palette.is_none());
+        app.update(Action::ToggleHelp);
+        press(KeyCode::Char(':'), &app, &mut palette);
+        assert!(matches!(
+            dispatch_key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &app,
+                &mut palette
+            ),
+            Some(Action::Quit)
+        ));
+    }
+
+    #[test]
+    fn palette_only_commands_and_navigation_use_the_actual_queue() {
+        let mut app = App::default();
+        let track = crate::provider::Track {
+            provider: crate::provider::ProviderId::Mock,
+            id: "1".into(),
+            title: "Track".into(),
+            artist: String::new(),
+            album: String::new(),
+            duration_secs: 90,
+        };
+        app.queue = [track.clone(), track].into();
+        app.update(Action::ShowQueue);
+        let mut palette = None;
+        press(KeyCode::Char(':'), &app, &mut palette);
+        for ch in "session".chars() {
+            press(KeyCode::Char(ch), &app, &mut palette);
+        }
+        press(KeyCode::Down, &app, &mut palette);
+        assert!(matches!(
+            press(KeyCode::Enter, &app, &mut palette),
+            Some(Action::RestoreQueue)
+        ));
+        press(KeyCode::Char(':'), &app, &mut palette);
+        for ch in "session".chars() {
+            press(KeyCode::Char(ch), &app, &mut palette);
+        }
+        assert!(matches!(
+            press(KeyCode::Enter, &app, &mut palette),
+            Some(Action::SaveQueue)
+        ));
+        for (key, direction) in [('J', 1), ('K', -1)] {
+            assert!(
+                matches!(press(KeyCode::Char(key), &app, &mut palette), Some(Action::MoveQueued(d)) if d == direction)
+            );
+        }
+        assert!(matches!(
+            press(KeyCode::Char('E'), &app, &mut palette),
+            Some(Action::QueueNext)
+        ));
+        assert!(matches!(
+            press(KeyCode::Char('['), &app, &mut palette),
+            Some(Action::PreviousTrack)
+        ));
+    }
+
     #[test]
     fn volume_shortcuts_are_global_but_not_in_text_entry() {
         let app = App::default();
@@ -140,9 +276,10 @@ mod tests {
             );
         }
         assert!(matches!(
-            map_key(
+            dispatch_key(
                 KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-                &app
+                &app,
+                &mut None,
             ),
             Some(Action::Quit)
         ));

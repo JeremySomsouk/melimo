@@ -1,561 +1,284 @@
-use super::theme;
-use crate::app::state::{App, DISCOVER, DISCOVER_GROUPS, PlaybackState, View};
-use ratatui::text::Line;
+mod browse;
+mod player;
+
+use super::theme::Theme;
+use crate::app::state::{App, View};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    widgets::{Block, Gauge, Paragraph, Row, Table, TableState, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Paragraph, TableState, Wrap},
 };
-use unicode_width::UnicodeWidthStr;
 
 pub fn render(frame: &mut Frame, app: &App, provider: &str, table: &mut TableState) {
-    let theme = theme::Theme::from_env();
-    frame.render_widget(Block::default().style(theme.base()), frame.area());
-    let [header, body, footer, player] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(0),
-        Constraint::Length(if app.notice.is_some() { 2 } else { 1 }),
-        Constraint::Length(
-            if frame.area().height >= 18
-                && !(app.view == View::NowPlaying && frame.area().height < 22)
-            {
-                6
-            } else {
-                1
-            },
-        ),
-    ])
-    .areas(frame.area());
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled("Mélimo  /  music for your terminal", theme.accent()),
-            Line::styled(provider.to_owned(), theme.secondary()),
-        ]),
-        header,
-    );
-    if app.show_help {
-        frame.render_widget(Paragraph::new("/  Edit search · Enter submits\nBackspace  Delete last character · Ctrl+U  Clear query\nj/k or ↑/↓  Select · g/G  First/last\nEnter  Play selected track\nSpace  Pause/resume · ←/→  Seek 10s · +/-  Volume · m  Mute · l  Lyrics/karaoke · s  Stop\nd  Discover genres, moods, Flow & favorites\nP  Switch search provider · Tab  Tracks / playlists (Deezer)\na  Play all displayed tracks · n  Next queued track\np  Return to player · b  Queue · r  Shuffle and play\ne  Enqueue selected track · Delete  Remove queued track\nf  Toggle selected/current Deezer favorite · L  Refresh login\nq / Esc  Back, or quit from Discover\nCtrl+C  Always quit\n?  Toggle help").block(theme.panel("Help")).wrap(Wrap { trim: true }), body);
-    } else if app.view == View::Discover {
-        render_discover(frame, body, app, &theme, table);
-    } else if app.view == View::Queue && app.queue.is_empty() {
-        render_state(
-            frame,
-            body,
-            &theme,
-            "Up next",
-            "Your queue is empty",
-            "Browse with d, then press e on a track to add it.",
-            "Add several tracks to keep the music going.",
-        );
-    } else if app.view == View::Queue {
-        table.select(app.selected);
-        frame.render_stateful_widget(
-            Table::new(
-                app.queue.iter().map(|t| {
-                    Row::new([
-                        format!("[{}] {}", t.provider.label(), t.title),
-                        t.artist.clone(),
-                        format_time(t.duration_secs),
-                    ])
-                }),
-                [
-                    Constraint::Percentage(50),
-                    Constraint::Min(8),
-                    Constraint::Length(6),
-                ],
-            )
-            .block(theme.panel(format!(
-                "Up next · {} · Enter jumps here · Delete removes · r shuffles & plays",
-                app.queue.len()
-            )))
-            .row_highlight_style(theme.selected())
-            .highlight_symbol("› "),
-            body,
-            table,
-        );
-    } else if app.view == View::NowPlaying {
-        if let Some(track) = &app.opened {
-            let block = theme.panel("Now Playing");
-            let inner = block.inner(body);
-            frame.render_widget(block, body);
-            let [details, progress, controls, lyrics_area] = Layout::vertical([
-                Constraint::Length(4),
-                Constraint::Length(1),
-                Constraint::Length(if frame.area().height < 18 {
-                    0
-                } else if inner.width < 70 {
-                    3
-                } else {
-                    2
-                }),
-                Constraint::Min(0),
-            ])
-            .areas(inner);
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::styled(
-                        format!("[{}] {}", track.provider.label(), track.title),
-                        theme.title(),
-                    ),
-                    Line::raw(track.artist.clone()),
-                    Line::styled(
-                        format!("{} · {}", track.provider.name(), track.album),
-                        theme.secondary(),
-                    ),
-                    Line::styled(
-                        match &app.playback {
-                            PlaybackState::Error(error) => error.as_str(),
-                            _ => playback_label(app),
-                        },
-                        theme.accent(),
-                    ),
-                ]),
-                details,
-            );
-            frame.render_widget(progress_gauge(app, track.duration_secs, &theme), progress);
-            let pause = if app.pause_requested {
-                "Resume"
-            } else {
-                "Pause"
-            };
-            let controls_text = if inner.width < 70 {
-                format!(
-                    "Space {pause} · ←/→ seek\n+/- volume {} · m mute\nl lyrics · n next · b queue · ? help",
-                    volume_label(app)
-                )
-            } else {
-                format!(
-                    "Space {pause} · ←/→ seek 10s · +/- volume {} · m mute\nl lyrics · n next · s stop · b queue · f favorite",
-                    volume_label(app)
-                )
-            };
-            frame.render_widget(Paragraph::new(controls_text), controls);
-            if app.karaoke {
-                let block = theme.panel("Lyrics · synchronized when available");
-                let area = block.inner(lyrics_area);
-                frame.render_widget(block, lyrics_area);
-                match &app.lyrics {
-                    None => render_state_text(
-                        frame,
-                        area,
-                        &theme,
-                        "Loading lyrics…",
-                        "l returns to the player.",
-                        "Playback continues while lyrics load.",
-                    ),
-                    Some(Err(_)) => render_state_text(
-                        frame,
-                        area,
-                        &theme,
-                        "Lyrics unavailable",
-                        "l returns to the player.",
-                        "No lyrics were supplied for this track or session.",
-                    ),
-                    Some(Ok(lyrics)) if lyrics.lines.is_empty() && lyrics.plain.is_empty() => {
-                        render_state_text(
-                            frame,
-                            area,
-                            &theme,
-                            "No lyrics available",
-                            "l returns to the player.",
-                            "Try another song for synchronized lyrics.",
-                        )
-                    }
-                    Some(Ok(lyrics)) if !lyrics.lines.is_empty() => {
-                        let active = lyrics.active_line(app.elapsed_ms);
-                        let rows = usize::from(if area.height > 1 {
-                            area.height - 1
-                        } else {
-                            area.height
-                        });
-                        let start = active.unwrap_or(0).saturating_sub(rows / 2);
-                        let mut lines: Vec<Line> = lyrics
-                            .lines
-                            .iter()
-                            .enumerate()
-                            .skip(start)
-                            .take(rows)
-                            .map(|(i, line)| {
-                                if Some(i) == active {
-                                    Line::styled(format!("› {}", line.text), theme.selected())
-                                } else {
-                                    Line::styled(format!("  {}", line.text), theme.secondary())
-                                }
-                            })
-                            .collect();
-                        lines.push(Line::styled(lyrics.credits.clone(), theme.secondary()));
-                        frame.render_widget(Paragraph::new(lines), area);
-                    }
-                    Some(Ok(lyrics)) => frame.render_widget(
-                        Paragraph::new(format!(
-                            "Unsynchronized lyrics\n{}\n{}",
-                            lyrics.plain, lyrics.credits
-                        ))
-                        .wrap(Wrap { trim: false }),
-                        area,
-                    ),
-                }
-            }
-        } else {
-            render_state(
-                frame,
-                body,
-                &theme,
-                "Now Playing",
-                "Nothing playing yet",
-                "Press d to discover music or / to search.",
-                "Select a track and press Enter to start listening.",
-            );
-        }
+    let theme = Theme::from_env();
+    let area = frame.area();
+    frame.render_widget(Block::default().style(theme.base()), area);
+    let full_player = app.view == View::NowPlaying && !app.show_help;
+    let dock_height = if full_player || app.opened.is_none() {
+        0
+    } else if area.height >= 18 {
+        4
     } else {
-        let [search, results] =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(body);
-        let input = if app.editing {
-            format!("{}▏", app.query)
+        1
+    };
+    let compact = area.width < 72;
+    let [header, second_row, body, notice, footer, dock] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(u16::from(compact && area.height >= 11)),
+        Constraint::Min(0),
+        Constraint::Length(u16::from(app.notice.is_some())),
+        Constraint::Length(1),
+        Constraint::Length(dock_height),
+    ])
+    .areas(area);
+
+    let view = match app.view {
+        View::Discover => "Discover",
+        View::Search => "Search",
+        View::Queue => "Queue",
+        View::NowPlaying => "Player",
+    };
+    let provider_width = provider.chars().count() as u16 + 1;
+    let [brand, main_nav, source] = Layout::horizontal([
+        if compact {
+            Constraint::Fill(1)
         } else {
-            app.query.clone()
-        };
-        let scroll = input
-            .width()
-            .saturating_sub(usize::from(search.width.saturating_sub(2)))
-            .min(u16::MAX as usize) as u16;
-        frame.render_widget(
-            Paragraph::new(input)
-                .scroll((0, scroll))
-                .block(theme.panel(format!(
-                    "Search {} · {} · Tab switches",
-                    if app.playlist_search {
-                        "playlists"
-                    } else {
-                        "tracks"
-                    },
-                    if app.editing { "typing" } else { "/ to edit" }
-                ))),
-            search,
-        );
-        let message = if app.loading {
-            Some((
-                "Finding your music…",
-                "Press d to return to Discover.",
-                "Results will appear here when ready.",
-            ))
-        } else if let Some(error) = &app.error {
-            Some((
-                "Could not load music",
-                "Press / to search again or d to browse.",
-                error.as_str(),
-            ))
-        } else if !app.searched {
-            Some((
-                "Find your next song",
-                "Press / to search or d to browse.",
-                "Use Tab outside text entry to switch tracks and playlists.",
-            ))
-        } else if (app.showing_playlists && app.playlists.is_empty())
-            || (!app.showing_playlists && app.tracks.is_empty())
-        {
-            Some((
-                "No music found",
-                "Try other keywords with / or browse with d.",
-                "This search or collection has no available results.",
-            ))
+            Constraint::Length(10)
+        },
+        if compact {
+            Constraint::Length(0)
         } else {
-            None
-        };
-        let title = app
-            .collection
-            .as_deref()
-            .unwrap_or(if app.showing_playlists {
-                "Playlists"
+            Constraint::Fill(1)
+        },
+        Constraint::Length(provider_width.min(area.width / 2)),
+    ])
+    .areas(header);
+    let mut identity = vec![Span::styled(" Mélimo ", theme.selected())];
+    if compact {
+        identity.push(Span::styled(
+            format!(" / {}", if app.show_help { "Keys" } else { view }),
+            theme.title(),
+        ));
+    }
+    frame.render_widget(Line::from(identity), brand);
+    frame.render_widget(
+        Line::styled(format!("{provider} "), theme.secondary()).right_aligned(),
+        source,
+    );
+    let mut nav_items = Vec::new();
+    for (name, key) in [
+        ("Discover", "d"),
+        ("Search", "/"),
+        ("Queue", "b"),
+        ("Player", "p"),
+    ] {
+        if name == "Discover" && app.search_provider == crate::provider::ProviderId::Invidious {
+            continue;
+        }
+        let label = format!(" {key} {name} ");
+        nav_items.push(Span::styled(
+            label,
+            if name == view && !app.show_help {
+                theme.accent().underlined()
             } else {
-                "Tracks"
-            });
-        if let Some((heading, hint, detail)) = message {
-            render_state(
-                frame,
-                results,
-                &theme,
-                title,
-                heading,
-                if app.editing {
-                    "Enter searches; Esc returns to browsing."
-                } else {
-                    hint
-                },
-                detail,
-            );
-        } else if app.showing_playlists {
-            let rows = app.playlists.iter().map(|p| {
-                Row::new([
-                    p.title.clone(),
-                    if p.tracks > 0 {
-                        p.tracks.to_string()
-                    } else {
-                        "-".into()
-                    },
-                ])
-            });
-            table.select(app.selected);
-            frame.render_stateful_widget(
-                Table::new(rows, [Constraint::Min(10), Constraint::Length(8)])
-                    .header(
-                        Row::new(["Playlist · Enter to inspect", "Tracks"]).style(theme.title()),
-                    )
-                    .block(theme.panel(format!("{title} · {}", app.playlists.len())))
-                    .row_highlight_style(theme.selected())
-                    .highlight_symbol("› "),
-                results,
-                table,
-            );
-        } else {
-            let rows = app.tracks.iter().map(|track| {
-                Row::new(vec![
-                    format!("[{}] {}", track.provider.label(), track.title),
-                    track.artist.clone(),
-                    format_time(track.duration_secs),
-                ])
-            });
-            let widget = Table::new(
-                rows,
-                [
-                    Constraint::Percentage(52),
-                    Constraint::Min(8),
-                    Constraint::Length(6),
-                ],
-            )
-            .header(Row::new(["Title", "Artist", "Time"]).style(theme.title()))
-            .block(theme.panel(format!("{title} · {} · a plays all", app.tracks.len())))
-            .row_highlight_style(theme.selected())
-            .highlight_symbol("› ");
-            table.select(app.selected);
-            frame.render_stateful_widget(widget, results, table);
+                theme.secondary()
+            },
+        ));
+    }
+    frame.render_widget(
+        Line::from(nav_items),
+        if compact { second_row } else { main_nav },
+    );
+
+    if app.show_help {
+        render_help(frame, body, &theme);
+    } else {
+        match app.view {
+            View::Discover => browse::discover(frame, body, app, &theme, table),
+            View::Search => browse::search(frame, body, app, &theme, table),
+            View::Queue => browse::queue(frame, body, app, &theme, table),
+            View::NowPlaying => player::full(frame, body, app, &theme),
         }
     }
-    let footer_text = if frame.area().width < 70 && !app.editing && !app.show_help {
-        "? help · p player · d discover"
-    } else if app.show_help {
-        "? / q close help · Ctrl+C quit"
+    if let Some(message) = &app.notice {
+        frame.render_widget(Line::styled(format!(" {message}"), theme.signal()), notice);
+    }
+
+    let keys: &[(&str, &str)] = if app.show_help {
+        &[("Esc", "close help"), ("Ctrl+C", "quit")]
     } else if app.editing {
-        "Enter search · Esc leave input · Ctrl+U clear"
-    } else if app.view == View::NowPlaying {
-        "Space pause/resume · ←/→ seek · +/- volume · m mute · l lyrics · n next · b queue · d Discover"
+        &[("Enter", "search"), ("Esc", "cancel"), ("Ctrl+U", "clear")]
+    } else if app.view == View::Queue && app.queue.is_empty() {
+        &[("/", "search"), (":", "append saved queue")]
     } else if app.view == View::Queue {
-        "Enter play from here · r shuffle/play · n next · f favorite · p player · q back"
+        &[
+            ("J/K", "move"),
+            ("E", "to front"),
+            ("Del", "remove"),
+            ("Enter", "play"),
+            ("r", "shuffle"),
+        ]
     } else if app.view == View::Discover {
-        "Enter browse · ←/→ groups · P provider · / search · p player · L login · ? help"
+        &[("Enter", "browse"), ("←/→", "group"), ("/", "search")]
+    } else if app.view == View::NowPlaying {
+        &[
+            ("l", "lyrics"),
+            ("b", "queue"),
+            ("[", "previous"),
+            ("n", "next"),
+        ]
+    } else if app.selected.is_none() {
+        &[("/", "search"), ("b", "queue")]
     } else if app.showing_playlists {
-        "Enter inspect · a play playlist · r shuffle/play · / search · p player · b queue"
+        &[("Enter", "inspect"), ("a", "play"), ("r", "shuffle")]
     } else {
-        "Enter play · a all · r shuffle · e enqueue · f favorite · p player · b queue"
+        &[
+            ("Enter", "play"),
+            ("E", "play next"),
+            ("e", "enqueue"),
+            ("a", "play all"),
+        ]
     };
+    let palette_width = if app.show_help || app.editing {
+        0
+    } else if area.width < 65 {
+        8
+    } else {
+        20
+    };
+    let [hints, commands] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(palette_width)]).areas(footer);
+    frame.render_widget(key_line(keys, hints.width, &theme), hints);
     frame.render_widget(
-        Paragraph::new(format!(
-            "{footer_text}\n{}",
-            app.notice.as_deref().unwrap_or("")
-        )),
-        footer,
+        Line::styled(
+            if palette_width == 8 {
+                ": cmds "
+            } else {
+                ": commands   ? help "
+            },
+            theme.accent(),
+        )
+        .right_aligned(),
+        commands,
     );
-    render_bottom_player(frame, player, app, &theme);
+    player::dock(frame, dock, app, &theme);
 }
 
-fn render_state(
+fn key_line(keys: &[(&str, &str)], width: u16, theme: &Theme) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+    let mut spans = Vec::new();
+    let mut remaining = usize::from(width);
+    for &(key, description) in keys {
+        let length = 3 + key.width() + description.width();
+        if length > remaining {
+            break;
+        }
+        remaining -= length;
+        spans.push(Span::styled(format!(" {key} "), theme.accent()));
+        spans.push(Span::styled(format!("{description} "), theme.base()));
+    }
+    Line::from(spans)
+}
+
+fn state(
     frame: &mut Frame,
     area: Rect,
-    theme: &theme::Theme,
+    theme: &Theme,
     title: &str,
     heading: &str,
     hint: &str,
     detail: &str,
 ) {
-    let panel = theme.panel(title);
-    let inner = panel.inner(area);
-    frame.render_widget(panel, area);
-    render_state_text(frame, inner, theme, heading, hint, detail);
-}
-
-fn render_state_text(
-    frame: &mut Frame,
-    area: Rect,
-    theme: &theme::Theme,
-    heading: &str,
-    hint: &str,
-    detail: &str,
-) {
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(heading, theme.accent()),
-            Line::styled(hint, theme.title()),
-            Line::styled(detail, theme.secondary()),
-        ])
-        .wrap(Wrap { trim: true }),
-        area,
-    );
-}
-
-fn render_discover(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    theme: &theme::Theme,
-    table: &mut TableState,
-) {
-    if area.width < 90 {
-        table.select(app.selected);
-        frame.render_stateful_widget(
-            Table::new(
-                DISCOVER.iter().map(|(title, _)| Row::new([*title])),
-                [Constraint::Percentage(100)],
-            )
-            .block(theme.panel("Discover · genre, mood & your music"))
-            .row_highlight_style(theme.selected())
-            .highlight_symbol("› "),
-            area,
-            table,
-        );
-        return;
-    }
-    let columns = Layout::horizontal([
-        Constraint::Percentage(40),
-        Constraint::Percentage(28),
-        Constraint::Percentage(32),
-    ])
-    .split(area);
-    for ((title, indices), column) in DISCOVER_GROUPS.iter().zip(columns.iter()) {
-        let mut selection = TableState::default();
-        selection.select(
-            app.selected
-                .and_then(|selected| indices.iter().position(|&index| index == selected)),
-        );
-        let rows = indices.iter().map(|&index| {
-            let label = DISCOVER[index].0;
-            Row::new([label.strip_prefix("Genre · ").unwrap_or(label)])
-        });
-        frame.render_stateful_widget(
-            Table::new(rows, [Constraint::Percentage(100)])
-                .block(theme.panel(*title))
-                .row_highlight_style(theme.selected())
-                .highlight_symbol("› "),
-            *column,
-            &mut selection,
-        );
-    }
-}
-
-fn render_bottom_player(frame: &mut Frame, area: Rect, app: &App, theme: &theme::Theme) {
-    if area.height <= 1 {
-        let text = app.opened.as_ref().map_or_else(
-            || "Mélimo · Select a track to play".to_string(),
-            |track| {
-                format!(
-                    "{} · {} / {} · {}",
-                    playback_label(app),
-                    track.title,
-                    track.artist,
-                    format_time(app.elapsed)
-                )
-            },
-        );
-        frame.render_widget(Paragraph::new(text).style(theme.accent()), area);
-        return;
-    }
-    let block = theme.panel(format!("Now playing · {}", playback_label(app)));
+    let block = theme.panel(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [title, artist, progress, controls] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+    let [_, content] = Layout::vertical([
+        Constraint::Length(inner.height.saturating_sub(5).min(3)),
+        Constraint::Min(0),
     ])
     .areas(inner);
-    if let Some(track) = &app.opened {
-        frame.render_widget(
-            Paragraph::new(format!("[{}] {}", track.provider.label(), track.title))
-                .style(theme.title()),
-            title,
-        );
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{} · vol {} · {} queued",
-                track.artist,
-                volume_label(app),
-                app.queue.len()
-            ))
-            .style(theme.secondary()),
-            artist,
-        );
-        if let PlaybackState::Error(error) = &app.playback {
-            frame.render_widget(
-                Paragraph::new(error.as_str()).style(theme.secondary()),
-                progress,
-            );
-        } else {
-            frame.render_widget(progress_gauge(app, track.duration_secs, theme), progress);
-        }
-    } else {
-        frame.render_widget(
-            Paragraph::new("Your next song starts here").style(theme.title()),
-            title,
-        );
-        frame.render_widget(
-            Paragraph::new("Select a track or playlist to play").style(theme.secondary()),
-            artist,
-        );
+    let mut lines = vec![
+        Line::styled(heading, theme.title()),
+        Line::styled(hint, theme.accent()),
+    ];
+    if !detail.is_empty() {
+        lines.push(Line::styled(detail, theme.secondary()));
     }
-    let hint = if app.show_help {
-        "Close help to use playback controls"
-    } else if app.editing {
-        "Esc leaves search to use playback controls"
-    } else if matches!(app.playback, PlaybackState::Error(_)) {
-        "n skips queued track · d browse · / search"
-    } else if app.opened.is_none() {
-        "d discover · / search"
-    } else if inner.width < 70 {
-        if app.pause_requested {
-            "Space Resume · n next · m mute · p player"
-        } else {
-            "Space Pause · n next · m mute · p player"
-        }
-    } else if app.pause_requested {
-        "Space Resume · n next · s stop · +/- volume · m mute · b queue · p player"
-    } else {
-        "Space Pause · n next · s stop · +/- volume · m mute · b queue · p player"
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), content);
+}
+
+fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
+    let block = theme.panel("Keyboard shortcuts");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let navigation = [
+        ("Navigation", ""),
+        (":", "Find an action"),
+        ("/ · Enter", "Edit / submit search"),
+        ("Ctrl+U · ⌫", "Clear / erase query"),
+        ("↑/↓ · j/k", "Select a row"),
+        ("g/G", "First / last row"),
+        ("←/→", "Change Discover group"),
+        ("d · p · b", "Discover / player / queue"),
+        ("Tab · P", "Search type / provider"),
+        ("L", "Refresh Deezer login"),
+        ("q/Esc", "Back, then quit"),
+        ("Ctrl+C", "Quit immediately"),
+    ];
+    let playback = [
+        ("Playback & queue", ""),
+        ("Enter", "Play track / open playlist"),
+        ("e · E", "Queue last / play next"),
+        ("J/K · Del", "Move down/up / remove"),
+        ("Space", "Pause / resume"),
+        ("[ · n", "Previous / next track"),
+        ("←/→", "Seek 10 seconds in player"),
+        ("+/- · m", "Volume / mute"),
+        ("a · r", "Play all / shuffle"),
+        ("l · f", "Lyrics / Deezer favorite"),
+        ("s", "Stop and clear queue"),
+        (":", "Save / append a saved queue"),
+    ];
+    let section = |items: &[(&str, &str)]| -> Vec<Line<'static>> {
+        items
+            .iter()
+            .map(|&(key, desc)| {
+                if desc.is_empty() {
+                    Line::styled(key.to_owned(), theme.signal())
+                } else {
+                    Line::from(vec![
+                        Span::styled(format!("{key:<12}"), theme.accent()),
+                        Span::raw(desc.to_owned()),
+                    ])
+                }
+            })
+            .collect()
     };
-    frame.render_widget(Paragraph::new(hint).style(theme.accent()), controls);
-}
-
-fn progress_gauge(app: &App, duration: u64, theme: &theme::Theme) -> Gauge<'static> {
-    Gauge::default()
-        .gauge_style(theme.progress())
-        .ratio(if duration == 0 {
-            0.0
-        } else {
-            (app.elapsed as f64 / duration as f64).clamp(0.0, 1.0)
-        })
-        .label(format!(
-            "{} / {}",
-            format_time(app.elapsed),
-            format_time(duration)
-        ))
-}
-
-fn volume_label(app: &App) -> String {
-    if app.volume.is_muted() {
-        "muted".into()
+    if inner.width >= 82 {
+        let [left, right] =
+            Layout::horizontal([Constraint::Percentage(48), Constraint::Fill(1)]).areas(inner);
+        frame.render_widget(Paragraph::new(section(&navigation)), left);
+        frame.render_widget(Paragraph::new(section(&playback)), right);
     } else {
-        format!("{}%", app.volume.percent())
-    }
-}
-
-fn playback_label(app: &App) -> &str {
-    match &app.playback {
-        PlaybackState::Stopped => "Stopped",
-        PlaybackState::Loading => "Loading audio…",
-        PlaybackState::Playing if app.buffering => "Buffering…",
-        PlaybackState::Playing => "Playing",
-        PlaybackState::Paused => "Paused",
-        PlaybackState::Finished => "Finished",
-        PlaybackState::Error(_) => "Playback unavailable",
+        // The searchable command menu also exposes these controls on a short screen.
+        let compact = [
+            (":", "Find any action by name"),
+            ("/ · Enter", "Edit / submit search"),
+            ("j/k · g/G", "Select / first or last"),
+            ("d / p / b", "Discover / player / queue"),
+            ("e / E", "Queue last / play next"),
+            ("J/K · Del", "Move down/up / remove"),
+            ("[ / n", "Previous / next"),
+            ("Space · ←/→", "Pause / seek"),
+            ("+/- · m", "Volume / mute"),
+            ("a/r · l/f", "Play/shuffle · lyrics/favorite"),
+            ("Tab · P", "Search type / provider"),
+            ("s · L", "Stop & clear / refresh login"),
+            (":", "Save / append a saved queue"),
+            ("Esc · Ctrl+C", "Back / quit"),
+        ];
+        frame.render_widget(Paragraph::new(section(&compact)), inner);
     }
 }
 
@@ -575,7 +298,9 @@ fn format_time(seconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::player::playback_label;
     use super::*;
+    use crate::app::state::{DISCOVER, DISCOVER_GROUPS, PlaybackState};
     use ratatui::{Terminal, backend::TestBackend};
     #[test]
     fn provider_labels_follow_results_queue_and_player() {
@@ -707,7 +432,7 @@ mod tests {
         });
         app.elapsed = 84;
         for width in [60, 100] {
-            for view in [View::Discover, View::Search, View::Queue, View::NowPlaying] {
+            for view in [View::Discover, View::Search, View::Queue] {
                 app.view = view;
                 for state in [
                     PlaybackState::Playing,
@@ -886,6 +611,135 @@ mod tests {
         assert!(text.contains("Demo"));
         assert!(!text.contains("Space Pause"));
         assert!(!text.contains("m mute"));
+    }
+
+    fn snapshot(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    app,
+                    app.search_provider.name(),
+                    &mut TableState::default(),
+                )
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn listening_desk_reflows_without_repeating_the_track() {
+        let mut app = App::default();
+        let song = crate::provider::Track {
+            provider: crate::provider::ProviderId::Deezer,
+            id: "1".into(),
+            title: "Départ".into(),
+            artist: "Orchestra".into(),
+            album: "Night".into(),
+            duration_secs: 180,
+        };
+        app.opened = Some(song.clone());
+        app.queue.push_back(crate::provider::Track {
+            title: "Morning".into(),
+            ..song
+        });
+        app.view = View::NowPlaying;
+        let wide = snapshot(&app, 100, 24);
+        assert!(
+            wide.iter()
+                .any(|row| row.contains("Now playing") && row.contains("Up next"))
+        );
+        let narrow = snapshot(&app, 40, 18);
+        let player = narrow
+            .iter()
+            .position(|row| row.contains("Départ"))
+            .unwrap();
+        let next = narrow
+            .iter()
+            .position(|row| row.contains("Morning"))
+            .unwrap();
+        assert!(next > player);
+        for rows in [wide, narrow] {
+            let text = rows.join("\n");
+            assert_eq!(text.matches("Départ").count(), 1);
+            assert!(text.contains("0:00 / 3:00"));
+        }
+    }
+
+    #[test]
+    fn queue_reports_total_and_surfaces_reordering_and_commands() {
+        let mut app = App::default();
+        app.view = View::Queue;
+        for (id, seconds) in [("one", 70), ("two", 125)] {
+            app.queue.push_back(crate::provider::Track {
+                provider: crate::provider::ProviderId::Deezer,
+                id: id.into(),
+                title: id.into(),
+                artist: "Mix".into(),
+                album: "Night".into(),
+                duration_secs: seconds,
+            });
+        }
+        app.selected = Some(1);
+        let text = snapshot(&app, 100, 20).join("\n");
+        for expected in [
+            "Up next · 2 · 3:15 total",
+            "1:10 queued before selection",
+            "J/K move",
+            "E to front",
+            ": commands",
+            "Album",
+        ] {
+            assert!(text.contains(expected), "{expected}");
+        }
+        app.queue[0].title = "Night Train to Sendai".into();
+        app.queue[0].duration_secs = 3600;
+        let small = snapshot(&app, 40, 14).join("\n");
+        assert!(small.contains("1h 02m total"));
+        assert!(small.contains("Night Train to Sendai"));
+        assert!(small.contains("[DZR] Mix"));
+        assert!(small.contains(": cmds"));
+        assert!(!small.contains("Album"));
+    }
+
+    #[test]
+    fn last_and_first_track_remain_visible_when_a_long_queue_reflows() {
+        let mut app = App::default();
+        app.view = View::Queue;
+        app.queue = (0..1000)
+            .map(|i| crate::provider::Track {
+                provider: crate::provider::ProviderId::Deezer,
+                id: i.to_string(),
+                title: format!("Song {i:03}"),
+                artist: "Group".into(),
+                album: String::new(),
+                duration_secs: 60,
+            })
+            .collect();
+        let mut table = TableState::default();
+        for (index, width, height) in [(999, 40, 13), (998, 100, 25), (2, 40, 13), (0, 60, 20)] {
+            app.selected = Some(index);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| render(frame, &app, "Demo", &mut table))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains(&format!("Song {index:03}")));
+            assert_eq!(table.selected(), Some(index));
+        }
     }
 
     #[test]

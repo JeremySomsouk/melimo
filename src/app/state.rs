@@ -109,6 +109,9 @@ pub struct App {
     pub showing_playlists: bool,
     pub collection: Option<String>,
     pub queue: VecDeque<Track>,
+    history: VecDeque<Track>,
+    // A late disk read must not refill a lineup the listener has cleared or replaced.
+    pub(super) queue_generation: u64,
     pub notice: Option<String>,
     pending_playlist_play: Option<bool>,
     request_id: u64,
@@ -156,7 +159,22 @@ pub const DISCOVER_GROUPS: &[(&str, &[usize])] = &[
 ];
 
 impl App {
+    const HISTORY_LIMIT: usize = 64;
+
+    pub fn has_previous(&self) -> bool {
+        !self.history.is_empty()
+    }
+
     fn begin_playback(&mut self, track: Track) {
+        if let Some(previous) = self.opened.take()
+            && (previous.provider != track.provider || previous.id != track.id)
+        {
+            if self.history.len() == Self::HISTORY_LIMIT {
+                self.history.pop_front();
+            }
+            self.history.push_back(previous);
+        }
+        self.notice = None;
         self.lyrics = None;
         self.opened = Some(track);
         self.playback_id += 1;
@@ -166,6 +184,22 @@ impl App {
         self.pause_requested = false;
         self.buffering = false;
     }
+
+    fn advance_queue(&mut self) -> bool {
+        let Some(track) = self.queue.pop_front() else {
+            return false;
+        };
+        if self.view == View::Queue {
+            self.selected = self
+                .queue
+                .len()
+                .checked_sub(1)
+                .map(|last| self.selected.unwrap_or(0).saturating_sub(1).min(last));
+        }
+        self.begin_playback(track);
+        true
+    }
+
     fn browse(&mut self, kind: BrowseKind, query: String) -> Option<SearchRequest> {
         self.request_id += 1;
         self.pending_playlist_play = None;
@@ -227,6 +261,7 @@ impl App {
                 self.karaoke = !self.karaoke;
                 if self.opened.is_some() {
                     self.view = View::NowPlaying;
+                    self.pending_playlist_play = None;
                 }
             }
             Action::LyricsFinished { id, result } => {
@@ -234,14 +269,48 @@ impl App {
                     self.lyrics = Some(result);
                 }
             }
-            Action::Login | Action::ToggleFavorite | Action::Redraw => {}
-            Action::Enqueue => {
+            Action::Login
+            | Action::ToggleFavorite
+            | Action::SaveQueue
+            | Action::RestoreQueue
+            | Action::Redraw => {}
+            Action::QueueSaved(result) => super::saved::on_saved(self, result),
+            Action::QueueLoaded { generation, result } => {
+                if generation == self.queue_generation {
+                    super::saved::on_loaded(self, result);
+                }
+            }
+            Action::QueueNext if self.view == View::Queue => {
+                if let Some(track) = self.selected.and_then(|i| self.queue.remove(i)) {
+                    self.queue.push_front(track);
+                    self.selected = Some(0);
+                    self.notice = Some("Selected track is next.".into());
+                }
+            }
+            Action::Enqueue | Action::QueueNext => {
                 if self.view == View::Search
                     && !self.showing_playlists
                     && let Some(track) = self.selected.and_then(|i| self.tracks.get(i)).cloned()
                 {
-                    self.queue.push_back(track);
-                    self.notice = Some("Added to the queue. Press b to view it.".into());
+                    if matches!(action, Action::QueueNext) {
+                        self.queue.push_front(track);
+                        self.notice = Some("Queued to play next.".into());
+                    } else {
+                        self.queue.push_back(track);
+                        self.notice = Some("Added to the queue. Press b to view it.".into());
+                    }
+                }
+            }
+            Action::MoveQueued(direction) => {
+                if self.view == View::Queue
+                    && let Some(index) = self.selected
+                    && index < self.queue.len()
+                {
+                    let target = index
+                        .saturating_add_signed(direction.signum())
+                        .min(self.queue.len() - 1);
+                    self.queue.swap(index, target);
+                    self.selected = Some(target);
                 }
             }
             Action::RemoveQueued => {
@@ -263,11 +332,13 @@ impl App {
                 if self.opened.is_some() {
                     self.view = View::NowPlaying;
                     self.editing = false;
+                    self.pending_playlist_play = None;
                 } else {
                     self.notice = Some("Choose a track or playlist first.".into());
                 }
             }
             Action::ShowQueue => {
+                self.pending_playlist_play = None;
                 self.view = View::Queue;
                 self.editing = false;
                 self.selected = (!self.queue.is_empty()).then_some(0);
@@ -292,6 +363,7 @@ impl App {
                 };
                 if !tracks.is_empty() {
                     tracks.shuffle(&mut rand::rng());
+                    self.queue_generation = self.queue_generation.wrapping_add(1);
                     self.queue = tracks.into();
                     if let Some(track) = self.queue.pop_front() {
                         self.begin_playback(track);
@@ -333,16 +405,30 @@ impl App {
                 self.view = View::Search;
             }
             Action::PlayAll if !self.tracks.is_empty() && !self.showing_playlists => {
+                self.queue_generation = self.queue_generation.wrapping_add(1);
                 self.queue = self.tracks.iter().skip(1).cloned().collect();
                 self.begin_playback(self.tracks[0].clone());
                 self.view = View::NowPlaying;
             }
             Action::PlayAll => {}
             Action::NextTrack => {
-                if let Some(track) = self.queue.pop_front() {
-                    self.begin_playback(track);
-                } else {
+                self.pending_playlist_play = None;
+                if !self.advance_queue() {
                     self.update(Action::StopPlayback);
+                }
+            }
+            Action::PreviousTrack => {
+                if let Some(previous) = self.history.pop_back() {
+                    self.pending_playlist_play = None;
+                    if let Some(current) = self.opened.take() {
+                        self.queue.push_front(current);
+                        if self.view == View::Queue {
+                            self.selected = Some(self.selected.map_or(0, |i| i + 1));
+                        }
+                    }
+                    self.begin_playback(previous);
+                } else {
+                    self.notice = Some("No previous track in this session.".into());
                 }
             }
             Action::BrowseFinished { id, result } if id == self.request_id => {
@@ -359,7 +445,9 @@ impl App {
                     }
                     Err(error) => self.error = Some(error),
                 }
-                self.selected = (self.result_count() > 0).then_some(0);
+                if self.view == View::Search {
+                    self.selected = (self.result_count() > 0).then_some(0);
+                }
                 if let Some(shuffle) = self.pending_playlist_play.take()
                     && self.error.is_none()
                     && !self.tracks.is_empty()
@@ -404,7 +492,12 @@ impl App {
                 self.pending_playlist_play = None;
                 self.playback_id += 1;
                 self.playback = PlaybackState::Stopped;
+                self.queue_generation = self.queue_generation.wrapping_add(1);
                 self.queue.clear();
+                self.notice = Some("Playback stopped. Queue cleared.".into());
+                if self.view == View::Queue {
+                    self.selected = None;
+                }
                 self.buffering = false;
             }
             Action::PlaybackUpdate {
@@ -419,16 +512,21 @@ impl App {
                     self.elapsed_ms = elapsed_ms;
                     self.elapsed = elapsed_ms / 1000;
                     self.buffering = buffering;
-                    if finished && let Some(track) = self.queue.pop_front() {
-                        self.begin_playback(track);
+                    if finished {
+                        self.advance_queue();
                     }
                 }
             }
             Action::Quit => self.quit = true,
             Action::Back if self.show_help => self.show_help = false,
             Action::Back if self.editing => self.editing = false,
-            Action::Back if self.view == View::Queue => self.view = View::Search,
-            Action::Back if self.view == View::NowPlaying => self.view = View::Search,
+            Action::Back if matches!(self.view, View::Queue | View::NowPlaying) => {
+                self.view = View::Search;
+                self.selected = self
+                    .result_count()
+                    .checked_sub(1)
+                    .map(|last| self.selected.unwrap_or(0).min(last));
+            }
             Action::Back if self.view == View::Search => {
                 if self.search_provider == ProviderId::Invidious {
                     self.quit = true;
@@ -442,6 +540,7 @@ impl App {
             Action::Back => self.quit = true,
             Action::ToggleHelp => self.show_help = !self.show_help,
             Action::FocusSearch => {
+                self.pending_playlist_play = None;
                 self.view = View::Search;
                 self.editing = true;
                 self.selected = (self.result_count() > 0).then_some(0);
@@ -467,7 +566,9 @@ impl App {
                 self.searched = true;
                 match result {
                     Ok(tracks) => {
-                        self.selected = (!tracks.is_empty()).then_some(0);
+                        if self.view == View::Search {
+                            self.selected = (!tracks.is_empty()).then_some(0);
+                        }
                         self.tracks = tracks;
                     }
                     Err(error) => self.error = Some(error),
@@ -561,7 +662,6 @@ impl App {
             }
             Action::OpenTrack => {
                 if let Some(track) = self.selected.and_then(|i| self.tracks.get(i)).cloned() {
-                    self.queue.clear();
                     self.begin_playback(track);
                     self.view = View::NowPlaying;
                 }
@@ -583,6 +683,205 @@ mod tests {
             artist: "Artist".into(),
             album: "Album".into(),
             duration_secs: 123,
+        }
+    }
+
+    fn named_track(id: &str) -> Track {
+        Track {
+            id: id.into(),
+            ..track()
+        }
+    }
+
+    #[test]
+    fn queue_next_promotes_the_selected_entry_and_moves_follow_it() {
+        let first = named_track("first");
+        let second = named_track("second");
+        let choice = named_track("choice");
+        let mut app = App {
+            tracks: vec![choice.clone()],
+            selected: Some(0),
+            queue: VecDeque::from([first.clone(), second.clone()]),
+            ..App::default()
+        };
+        app.update(Action::QueueNext);
+        app.update(Action::ShowQueue);
+        app.update(Action::Last);
+        app.update(Action::QueueNext);
+        assert_eq!(app.queue, [second.clone(), choice.clone(), first.clone()]);
+        assert_eq!(app.selected, Some(0));
+        app.update(Action::MoveQueued(-1));
+        app.update(Action::MoveQueued(1));
+        app.update(Action::MoveQueued(1));
+        app.update(Action::MoveQueued(1));
+        assert_eq!(app.queue, [choice.clone(), first, second.clone()]);
+        assert_eq!(app.selected, Some(2));
+        app.update(Action::MoveQueued(-1));
+        assert_eq!(app.queue.get(1), Some(&second));
+        assert_eq!(app.selected, Some(1));
+        assert_eq!(app.playback_id, 0);
+        app.update(Action::NextTrack);
+        assert_eq!(app.opened.as_ref(), Some(&choice));
+        assert_eq!(app.selected, Some(0));
+        app.update(Action::StopPlayback);
+        assert_eq!(app.selected, None);
+        app.update(Action::Back);
+        assert_eq!(app.selected, Some(0));
+    }
+
+    #[test]
+    fn previous_preserves_forward_queue_and_ignores_obsolete_finishes() {
+        let first = Track {
+            provider: ProviderId::Deezer,
+            ..named_track("1")
+        };
+        let second = Track {
+            provider: ProviderId::Invidious,
+            ..named_track("1")
+        };
+        let third = named_track("3");
+        let last = named_track("4");
+        let mut app = App {
+            tracks: vec![first.clone(), second.clone(), third.clone(), last.clone()],
+            ..App::default()
+        };
+        app.update(Action::PlayAll);
+        app.update(Action::SeekRelative(10));
+        assert!(!app.has_previous());
+        app.update(Action::PlaybackUpdate {
+            id: app.playback_id,
+            state: PlaybackState::Finished,
+            elapsed_ms: 123000,
+            buffering: false,
+        });
+        app.update(Action::NextTrack);
+        let failed = app.playback_id;
+        app.update(Action::PlaybackUpdate {
+            id: failed,
+            state: PlaybackState::Error("network".into()),
+            elapsed_ms: 0,
+            buffering: false,
+        });
+        app.update(Action::ShowQueue);
+        app.update(Action::PreviousTrack);
+        app.update(Action::PlaybackUpdate {
+            id: failed,
+            state: PlaybackState::Finished,
+            elapsed_ms: 123000,
+            buffering: false,
+        });
+        assert!(app.playback == PlaybackState::Loading);
+        assert_eq!(app.opened.as_ref(), Some(&second));
+        assert_eq!(app.queue, [third.clone(), last.clone()]);
+        assert_eq!(app.selected, Some(1));
+        app.update(Action::PreviousTrack);
+        assert!(!app.has_previous());
+        assert_eq!(app.opened.as_ref(), Some(&first));
+        assert_eq!(app.queue, [second.clone(), third.clone(), last.clone()]);
+        assert_eq!(app.selected, Some(2));
+        let id = app.playback_id;
+        app.update(Action::PreviousTrack);
+        assert_eq!(app.playback_id, id);
+        app.update(Action::NextTrack);
+        assert_eq!(app.opened.as_ref(), Some(&second));
+        assert_eq!(app.queue, [third, last]);
+        assert_eq!(app.selected, Some(1));
+    }
+
+    #[test]
+    fn history_is_bounded_and_restarting_a_track_adds_no_entry() {
+        let mut app = App::default();
+        for i in 0..=App::HISTORY_LIMIT + 2 {
+            let track = named_track(&i.to_string());
+            app.begin_playback(track.clone());
+            app.begin_playback(track);
+        }
+        assert_eq!(app.history.len(), App::HISTORY_LIMIT);
+        assert_eq!(app.history.front().unwrap().id, "2");
+    }
+
+    #[test]
+    fn background_search_preserves_the_queue_cursor() {
+        let mut app = App {
+            queue: VecDeque::from([named_track("a"), named_track("b")]),
+            ..App::default()
+        };
+        let request = app.update(Action::SubmitSearch).unwrap();
+        app.update(Action::ShowQueue);
+        app.update(Action::Last);
+        app.update(Action::SearchFinished {
+            id: request.id,
+            result: Ok(vec![]),
+        });
+        assert_eq!(app.selected, Some(1));
+        app.update(Action::QueueNext);
+        assert_eq!(app.queue.front().unwrap().id, "b");
+        app.update(Action::Back);
+        assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn playing_a_single_result_keeps_the_lineup_but_play_all_replaces_it() {
+        let first = named_track("start here");
+        let second = named_track("up next");
+        let last = named_track("already queued");
+        let mut app = App {
+            tracks: vec![first.clone(), second.clone()],
+            selected: Some(1),
+            queue: [last.clone()].into(),
+            ..App::default()
+        };
+        app.update(Action::QueueNext);
+        app.update(Action::First);
+        app.update(Action::OpenTrack);
+        assert_eq!(app.opened.as_ref(), Some(&first));
+        assert_eq!(app.queue, [second.clone(), last]);
+        app.update(Action::Back);
+        app.update(Action::PlayAll);
+        assert_eq!(app.opened.as_ref(), Some(&first));
+        assert_eq!(app.queue, [second]);
+    }
+
+    #[test]
+    fn pending_playlist_does_not_override_queue_edits_or_explicit_playback() {
+        let first = named_track("first");
+        let second = named_track("second");
+        let fetched = named_track("playlist track");
+        for choose_track in [false, true] {
+            let mut app = App {
+                queue: [first.clone(), second.clone()].into(),
+                playlists: vec![Playlist {
+                    id: "mix".into(),
+                    title: "Mix".into(),
+                    tracks: 1,
+                }],
+                showing_playlists: true,
+                selected: Some(0),
+                ..App::default()
+            };
+            let request = app.update(Action::ShufflePlay).unwrap();
+            if choose_track {
+                app.update(Action::NextTrack);
+            } else {
+                app.update(Action::ShowQueue);
+                app.update(Action::Last);
+            }
+            let playback_id = app.playback_id;
+            app.update(Action::BrowseFinished {
+                id: request.id,
+                result: Ok(BrowseResults::Tracks(vec![fetched.clone()])),
+            });
+            assert_eq!(app.playback_id, playback_id);
+            assert_eq!(app.tracks.as_slice(), std::slice::from_ref(&fetched));
+            if choose_track {
+                assert_eq!(app.opened.as_ref(), Some(&first));
+                assert_eq!(app.queue.len(), 1);
+                assert_eq!(app.queue.front(), Some(&second));
+            } else {
+                assert!(app.view == View::Queue);
+                assert_eq!(app.selected, Some(1));
+                assert_eq!(app.queue, [first.clone(), second.clone()]);
+            }
         }
     }
 

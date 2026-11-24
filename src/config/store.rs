@@ -167,7 +167,7 @@ fn save_at(path: &Path, arl: &Arl) -> Result<(), String> {
     })
 }
 
-fn validate_private_dir(dir: &Path) -> Result<(), String> {
+pub(super) fn validate_private_dir(dir: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(dir).map_err(|_| "Cannot inspect the login directory.")?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err("The login directory must not be a symlink.".into());
@@ -179,7 +179,7 @@ fn validate_private_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_private_dir(dir: &Path) -> Result<(), String> {
+pub(super) fn ensure_private_dir(dir: &Path) -> Result<(), String> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

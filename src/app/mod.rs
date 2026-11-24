@@ -1,4 +1,5 @@
 pub mod action;
+mod saved;
 pub mod state;
 
 use crate::{
@@ -72,6 +73,8 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
     app.search_provider = app.providers.first().copied().unwrap_or_default();
     app.update(Action::Discover);
     let mut table = TableState::default();
+    let mut palette = None;
+    let mut queue_store_busy = false;
     let (tx, mut rx) = mpsc::channel(8);
     let mut playback = None;
     let output = crate::playback::AudioOutput::default();
@@ -88,6 +91,9 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
                 dirty |= action_changes_display(&app, &action);
                 if matches!(action, Action::FavoriteFinished(_)) {
                     favorite_job = None;
+                }
+                if matches!(action, Action::QueueSaved(_) | Action::QueueLoaded { .. }) {
+                    queue_store_busy = false;
                 }
                 apply(
                     &mut app,
@@ -122,7 +128,10 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
             }
             if dirty {
                 terminal.draw(|frame| {
-                    tui::ui::render(frame, &app, app.search_provider.name(), &mut table)
+                    tui::ui::render(frame, &app, app.search_provider.name(), &mut table);
+                    if let Some(palette) = &palette {
+                        tui::palette::Palette::render(palette, frame, &app);
+                    }
                 })?;
                 dirty = false;
                 let title = terminal_title(&app);
@@ -131,8 +140,21 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
                     last_title = Some(title);
                 }
             }
-            if let Some(action) = tui::event::read_action(&app)? {
+            if let Some(action) = tui::event::read_action(&app, &mut palette)? {
                 dirty = true;
+                if matches!(action, Action::SaveQueue | Action::RestoreQueue) {
+                    if queue_store_busy {
+                        app.notice = Some("A saved queue operation is in progress.".into());
+                    } else {
+                        queue_store_busy = saved::start(
+                            &mut app,
+                            matches!(action, Action::SaveQueue),
+                            provider.mock,
+                            &tx,
+                        );
+                    }
+                    continue;
+                }
                 if matches!(action, Action::Login) {
                     if provider.deezer.is_none() {
                         app.notice = Some(
@@ -164,7 +186,13 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, provider: Providers) -> io::
                         })?;
                         Ok(crate::config::store::save(&arl).is_ok())
                     });
-                    while rx.try_recv().is_ok() {}
+                    while let Ok(action) = rx.try_recv() {
+                        // Login invalidates playback and browse jobs. Local queue I/O is independent.
+                        if matches!(action, Action::QueueSaved(_) | Action::QueueLoaded { .. }) {
+                            queue_store_busy = false;
+                            app.update(action);
+                        }
+                    }
                     *terminal = ratatui::init();
                     app.notice = Some(match result {
                         Ok(true) => "Deezer session refreshed.".into(),

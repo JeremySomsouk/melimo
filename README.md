@@ -6,9 +6,20 @@ Mélimo is a lightweight music player written in Rust. Search with Deezer or
 Invidious, build one queue, and control playback from your keyboard. Follow
 synchronized lyrics when Deezer provides them.
 
-**v0.3.0 — release preparation · Linux and macOS · MIT**
+**v0.4.0 · Linux and macOS · MIT**
 
-![Mélimo terminal player with synthetic demo metadata and lyrics](docs/assets/player.png)
+![Mélimo playing a fictional track, with synchronized lyrics and the upcoming queue side by side](docs/assets/player.png)
+
+## Try 0.4.0 in a minute
+
+Run `cargo run --locked -- --mock` from the 0.4.0 checkout. Press `/`, search
+for **After Hours** and press `Enter`. Add **Night Train** with `e`, move down
+to **Blue Window** and press `E` to put it first. Press `b` to see the order
+and total playing time. The demo uses fictional music and works offline.
+
+Press `:` to open **Commands**. Type **save queue** and press `Enter`.
+The next time you launch the demo, choose **Append saved queue** to bring the
+lineup back. The same controls work with your music providers.
 
 ## One player, two providers
 
@@ -54,8 +65,7 @@ cd Melimo
 cargo install --locked --path .
 ```
 
-The commands install the checked-out source version. v0.3.0 is being prepared
-and has not been tagged or published. Playback needs an interactive terminal
+The commands install the checked-out source version. Playback needs an interactive terminal
 and an audio output device. Windows is not a validated target.
 
 ## Start listening
@@ -119,7 +129,7 @@ enabled, `P` switches between both providers.
 `$XDG_DATA_HOME/melimo/session` on Linux (default
 `~/.local/share/melimo/session`). See [security](SECURITY.md) for storage protections.
 
-## Continuous audio in v0.3.0
+## Continuous audio
 
 The output device stays open for the terminal session. While a track plays,
 Mélimo prepares the next queued Deezer track in memory, with at most 64 KiB
@@ -132,14 +142,31 @@ or the app exits. A failed preparation cannot stop the current track.
 Decoded PCM buffers are recycled through a bounded channel. These changes aim
 to shorten transitions; they do not guarantee sample-exact gapless playback.
 Invidious uses the shared output engine but is not prefetched. Public-instance
-availability remains experimental and is not a v0.3.0 release gate.
+availability remains experimental.
 
 ## Queue, playback and lyrics
 
 Searches and provider switches preserve the current track and queue. Results are
-labelled `[DZR]` or `[INV]`. Press `b` to open the queue; playing a queued track
-skips earlier entries. Playback errors stop automatic progression so you can retry
-or explicitly skip a failed track.
+labelled `[DZR]` or `[INV]`. Press `Enter` on a single search result to play it
+and keep the upcoming queue. Play all and shuffle start a new lineup. In the
+queue, `Enter` starts the selected track and skips the entries above it.
+Playback errors wait for you to retry or skip the failed track.
+
+**Shape the queue.** Press `E` on a search result to play it next, or `e` to
+add it at the end. In the queue (`b`), use `J` and `K` to move a track, or
+`E` to bring it straight to the front. Press `[` to revisit a previous track.
+The displaced track goes to the front so `n` takes you forward again. History
+holds up to 64 previous tracks for this session.
+
+**Save it for later.** Open Commands with `:` and choose **Save queue** to
+replace your local snapshot of upcoming tracks. **Append saved queue** adds
+them in their saved order, including duplicates, after what is already queued.
+Playback continues. All providers in the snapshot must be enabled to append it.
+The slot holds up to 1,000 tracks and 2 MiB of metadata. Demo mode has its own slot.
+
+Mélimo writes the snapshot only when you choose Save. To erase it, remove
+`queue.json` (or `queue-demo.json`) from the Mélimo data directory beside the
+saved login. `MELIMO_NO_STORE=1` disables both saving and loading.
 
 Deezer's **Familiar** view loads favorites; **For you** loads a batch of Flow
 recommendations. **Discover** excludes the first 1,000 favorites from that batch.
@@ -155,9 +182,12 @@ playback. This is a lyrics view, not vocal removal.
 | `Enter` | Open a playlist or play the selected track |
 | `/`, `Tab`, `P` | Edit search / change Deezer search type / switch provider |
 | `a`, `r` | Play all / shuffle and play the displayed set |
-| `e`, `Delete` | Enqueue a track / remove a queued track |
+| `e`, `E` | Add at the end / play next |
+| `J`, `K`, `Delete` in Queue | Move down / move up / remove |
+| `[`, `n` | Previous track / next track |
+| `:` | Find an action by name, including Save queue and Append saved queue |
 | `p`, `b`, `d` | Player / queue / browse or search |
-| `Space`, `n`, `s` | Pause/resume / next / stop and clear queue |
+| `Space`, `s` | Pause/resume / stop and clear queue |
 | `+/-`, `m` | Volume in 5% steps / mute |
 | `←/→` in player | Seek backward/forward 10 seconds |
 | `l`, `f` | Toggle lyrics / toggle Deezer favorite |
@@ -199,11 +229,10 @@ MELIMO_THEME=mono melimo --invidious  # inherit terminal colors
 ```
 
 A nonempty `NO_COLOR` takes precedence. The compact player supports terminals
-from 40 columns wide; larger windows show more metadata and lyrics.
+from 40 columns wide. Wide players show the upcoming tracks beside lyrics.
 Discover shows Your music, Genres, and Mood / Activity in three columns at
 90 characters wide or more. Use left/right arrows to move between groups.
-The bottom player stays visible while browsing, with a single-line version
-in short windows.
+The transport stays visible while browsing during playback and collapses to one line in short windows.
 
 ## Current limits
 
@@ -216,13 +245,13 @@ in short windows.
   Mélimo does not join audio from different instances.
 - Deezer search returns up to 50 results; playlists and favorites cap at 1,000
   tracks. Flow is a finite batch. Invidious uses the first search results page.
-- There is no persistent queue, previous-track control or combined-provider search.
+- Search one provider at a time. The saved queue holds upcoming tracks. Playback position and track history last for the current session.
 - Audio and lyrics stay in memory; OS swap and core dumps are outside that
   guarantee. The selected instance and media hosts receive network requests.
 - Now-playing metadata appears in the terminal title and may appear in screenshots.
 
 Automated tests cover both providers, discovery and playback using synthetic data.
-Live Deezer playback remains an acceptance check before the v0.3.0 release.
+Live Deezer playback remains a manual acceptance check.
 See [release validation](docs/RELEASE.md) and [planned work](docs/NEXT_STEPS.md).
 
 ## Development
