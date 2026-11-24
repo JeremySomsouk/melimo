@@ -1,4 +1,5 @@
 pub mod invidious;
+pub mod saved_queue;
 pub mod store;
 
 use std::{env, fmt};

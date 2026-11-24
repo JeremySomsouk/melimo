@@ -21,6 +21,14 @@ memory. `MELIMO_NO_STORE=1` disables reads/writes; `--forget` removes a saved fi
 There is no promise of memory zeroization, secure erase, protection from same-user
 malware, privileged processes, OS swap, crash dumps or backups.
 
+## Saved queue
+
+Choosing **Save queue** writes upcoming track IDs, provider names and display
+metadata to a private local JSON file. The current position, credentials, audio
+and lyrics are excluded. The demo uses a separate file. Setting
+`MELIMO_NO_STORE=1` also disables queue storage. Delete the queue file to erase
+this metadata. `--forget` removes the saved Deezer login.
+
 ## Network and terminal boundaries
 
 Deezer production endpoints require HTTPS and reject redirects. Cookies are scoped to the

@@ -1,15 +1,14 @@
 use ratatui::{
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Block, BorderType},
+    widgets::{Block, BorderType, Padding},
 };
 
-const BACKGROUND: Color = Color::Rgb(13, 15, 22);
-const FOREGROUND: Color = Color::Rgb(246, 239, 226);
-const VIOLET: Color = Color::Rgb(170, 116, 255);
-const MUTED: Color = Color::Rgb(165, 166, 188);
-const BORDER: Color = Color::Rgb(65, 69, 87);
-const TRACK: Color = Color::Rgb(35, 38, 52);
+const BACKGROUND: Color = Color::Rgb(16, 24, 28);
+const FOREGROUND: Color = Color::Rgb(235, 242, 232);
+const MINT: Color = Color::Rgb(130, 227, 196);
+const MUTED: Color = Color::Rgb(158, 181, 181);
+const BORDER: Color = Color::Rgb(70, 96, 99);
 
 pub struct Theme {
     monochrome: bool,
@@ -36,8 +35,8 @@ impl Theme {
             Style::default()
         } else {
             Style::default()
-                .fg(self.color(FOREGROUND, Color::Rgb(40, 33, 52)))
-                .bg(self.color(BACKGROUND, Color::Rgb(250, 248, 253)))
+                .fg(self.color(FOREGROUND, Color::Rgb(28, 43, 43)))
+                .bg(self.color(BACKGROUND, Color::Rgb(247, 247, 239)))
         }
     }
 
@@ -49,8 +48,7 @@ impl Theme {
         if self.monochrome {
             self.title()
         } else {
-            self.title()
-                .fg(self.color(VIOLET, Color::Rgb(105, 55, 160)))
+            self.title().fg(self.color(MINT, Color::Rgb(16, 103, 84)))
         }
     }
 
@@ -59,8 +57,8 @@ impl Theme {
             self.title().add_modifier(Modifier::REVERSED)
         } else {
             self.title()
-                .fg(self.color(BACKGROUND, Color::Rgb(250, 248, 253)))
-                .bg(self.color(VIOLET, Color::Rgb(105, 55, 160)))
+                .fg(self.color(BACKGROUND, Color::Rgb(247, 247, 239)))
+                .bg(self.color(MINT, Color::Rgb(16, 103, 84)))
         }
     }
 
@@ -68,30 +66,34 @@ impl Theme {
         if self.monochrome {
             self.base().add_modifier(Modifier::DIM)
         } else {
-            self.base().fg(self.color(MUTED, Color::Rgb(103, 94, 116)))
+            self.base().fg(self.color(MUTED, Color::Rgb(76, 102, 100)))
         }
     }
 
-    pub fn progress(&self) -> Style {
+    pub fn signal(&self) -> Style {
         if self.monochrome {
-            self.base().fg(Color::White).bg(Color::Black)
+            self.title()
+        } else {
+            self.title()
+                .fg(self.color(Color::Rgb(255, 193, 117), Color::Rgb(135, 71, 15)))
+        }
+    }
+
+    pub fn border(&self) -> Style {
+        if self.monochrome {
+            self.base()
         } else {
             self.base()
-                .fg(self.color(VIOLET, Color::Rgb(105, 55, 160)))
-                .bg(self.color(TRACK, Color::Rgb(228, 222, 237)))
+                .fg(self.color(BORDER, Color::Rgb(119, 143, 137)))
         }
     }
 
     pub fn panel<'a>(&self, title: impl Into<Line<'a>>) -> Block<'a> {
         Block::bordered()
-            .border_type(BorderType::Rounded)
+            .border_type(BorderType::Plain)
+            .padding(Padding::horizontal(1))
             .style(self.base())
-            .border_style(if self.monochrome {
-                self.base()
-            } else {
-                self.base()
-                    .fg(self.color(BORDER, Color::Rgb(150, 140, 164)))
-            })
+            .border_style(self.border())
             .title_style(self.accent())
             .title(title)
     }
@@ -121,7 +123,7 @@ mod tests {
                 })
                 .sum()
         }
-        for foreground in [FOREGROUND, MUTED, VIOLET] {
+        for foreground in [FOREGROUND, MUTED, MINT] {
             let ratio = (luminance(foreground) + 0.05) / (luminance(BACKGROUND) + 0.05);
             assert!(ratio >= 4.5, "insufficient contrast: {ratio}");
         }

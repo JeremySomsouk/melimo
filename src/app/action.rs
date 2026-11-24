@@ -9,6 +9,15 @@ pub enum Action {
         result: Result<crate::provider::Lyrics, String>,
     },
     Enqueue,
+    QueueNext,
+    MoveQueued(isize),
+    SaveQueue,
+    RestoreQueue,
+    QueueSaved(Result<usize, String>),
+    QueueLoaded {
+        generation: u64,
+        result: Result<std::collections::VecDeque<Track>, String>,
+    },
     RemoveQueued,
     Back,
     ToggleHelp,
@@ -34,6 +43,7 @@ pub enum Action {
     CycleProvider,
     PlayAll,
     NextTrack,
+    PreviousTrack,
     BrowseFinished {
         id: u64,
         result: Result<crate::provider::BrowseResults, String>,

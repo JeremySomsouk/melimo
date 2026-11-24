@@ -1,3 +1,26 @@
+# v0.4.0 release preparation
+
+Version 0.4.0 updates the player, queue and command interface. The package is
+prepared on the release branch. See [the changelog](../CHANGELOG.md) for features.
+
+## Validation
+
+- macOS arm64, Rust 1.99.0. Formatting, strict Clippy and a locked release build
+  passed. The optimized binary reports `Mélimo 0.4.0`.
+- A real terminal running `--mock` exercised Unicode search, contextual commands,
+  queue reordering, previous/next navigation, persistence across launches, a
+  40×18 resize, and terminal restoration on exit.
+- File-backed tests cover metadata-only round trips, duplicates, invalid data
+  and preservation of an existing snapshot after a failed save.
+- Run `cargo test --locked` with local TCP listeners available for the provider
+  HTTP fixtures. This macOS sandbox blocks those listeners.
+- Hardware acceptance remains open. With an audio output attached, exercise
+  two consecutive tracks, previous/next and paused seeking on macOS and Linux.
+  With an authorized provider, check that reordering the next track during
+  playback follows the new queue order.
+
+---
+
 # v0.3.0 release preparation
 
 Package: **0.3.0**. No release tag or publication yet.

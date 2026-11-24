@@ -4,7 +4,7 @@ use crate::{
     app::{action::Action, state::PlaybackState},
     provider::{Track, router::Providers},
 };
-use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
+use rodio::{Decoder, OutputStreamBuilder, Sink, Source, mixer::Mixer};
 use std::{
     io::{self, Read, Seek, SeekFrom},
     sync::{
@@ -21,9 +21,52 @@ use tokio::{sync::mpsc, task::JoinHandle};
 #[derive(Default, Clone)]
 pub struct AudioOutput(Arc<Mutex<Option<OutputDevice>>>);
 struct OutputDevice {
-    stream: OutputStream,
+    mixer: Mixer,
+    _stream_lifetime: sync::Sender<()>,
     failed: Arc<AtomicBool>,
     active: Weak<Sink>,
+}
+impl OutputDevice {
+    // CoreAudio streams are thread-affine. Only the mixer and the failure flag
+    // cross threads. Closing the last lifetime sender releases the stream on its owner.
+    fn open() -> Result<Self, &'static str> {
+        let (ready, initialized) = sync::sync_channel(1);
+        let (lifetime, closed) = sync::channel();
+        let failed = Arc::new(AtomicBool::new(false));
+        let callback = failed.clone();
+        thread::Builder::new()
+            .name("melimo-output".into())
+            .spawn(move || {
+                let stream = OutputStreamBuilder::from_default_device()
+                    .map_err(|_| "No audio output device available.")
+                    .and_then(|builder| {
+                        builder
+                            .with_error_callback(move |_| callback.store(true, Ordering::Relaxed))
+                            .open_stream()
+                            .map_err(|_| "Cannot open the audio output device.")
+                    });
+                match stream {
+                    Ok(mut stream) => {
+                        stream.log_on_drop(false);
+                        if ready.send(Ok(stream.mixer().clone())).is_ok() {
+                            let _ = closed.recv();
+                        }
+                    }
+                    Err(error) => {
+                        let _ = ready.send(Err(error));
+                    }
+                }
+            })
+            .map_err(|_| "Cannot start audio output worker.")?;
+        Ok(Self {
+            mixer: initialized
+                .recv()
+                .map_err(|_| "Audio output worker exited.")??,
+            _stream_lifetime: lifetime,
+            failed,
+            active: Weak::new(),
+        })
+    }
 }
 impl AudioOutput {
     fn stop(&self) {
@@ -45,21 +88,7 @@ impl AudioOutput {
             *shared = None;
         }
         if shared.is_none() {
-            let failed = Arc::new(AtomicBool::new(false));
-            let callback = failed.clone();
-            let mut stream = OutputStreamBuilder::from_default_device()
-                .map_err(|_| "No audio output device available.")?
-                .with_error_callback(move |_| {
-                    callback.store(true, Ordering::Relaxed);
-                })
-                .open_stream()
-                .map_err(|_| "Cannot open the audio output device.")?;
-            stream.log_on_drop(false);
-            *shared = Some(OutputDevice {
-                stream,
-                failed,
-                active: Weak::new(),
-            });
+            *shared = Some(OutputDevice::open()?);
         }
         if cancel.load(Ordering::Relaxed) {
             return Err("Playback cancelled.");
@@ -68,7 +97,7 @@ impl AudioOutput {
         if let Some(previous) = device.active.upgrade() {
             previous.stop();
         }
-        let sink = Arc::new(Sink::connect_new(device.stream.mixer()));
+        let sink = Arc::new(Sink::connect_new(&device.mixer));
         sink.pause();
         device.active = Arc::downgrade(&sink);
         Ok((sink, device.failed.clone()))

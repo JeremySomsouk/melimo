@@ -5,21 +5,23 @@ use crate::{
         action::Action,
         state::{App, PlaybackState, View},
     },
-    provider::{LyricLine, Lyrics, Track},
+    provider::{LyricLine, Lyrics, MusicProvider, ProviderId, Track, mock::MockProvider},
 };
 use ratatui::{Terminal, backend::TestBackend, widgets::TableState};
 use std::time::Instant;
 
-#[test]
+#[tokio::test]
 #[ignore = "manual synthetic render benchmark; optionally exports cells to MELIMO_REVIEW_DIR"]
-fn synthetic_render_review() {
+async fn synthetic_render_review() {
     let mut app = App::default();
+    app.search_provider = ProviderId::Mock;
+    app.providers = vec![ProviderId::Mock];
     app.opened = Some(Track {
-        provider: crate::provider::ProviderId::Mock,
+        provider: ProviderId::Mock,
         id: "synthetic".into(),
-        title: "A little closer to the stars".into(),
+        title: "A Little Closer to the Stars".into(),
         artist: "The Imaginary Orchestra".into(),
-        album: "Synthetic sessions".into(),
+        album: "Midnight Sessions".into(),
         duration_secs: 210,
     });
     app.playback = PlaybackState::Playing;
@@ -33,6 +35,10 @@ fn synthetic_render_review() {
                 text: "Let the city settle down".into(),
             },
             LyricLine {
+                at_ms: 48000,
+                text: "Windows glow along the line".into(),
+            },
+            LyricLine {
                 at_ms: 60000,
                 text: "We are a little closer to the stars".into(),
             },
@@ -40,10 +46,15 @@ fn synthetic_render_review() {
                 at_ms: 70000,
                 text: "Another rhythm finds its way".into(),
             },
+            LyricLine {
+                at_ms: 84000,
+                text: "Somewhere past the station lights".into(),
+            },
         ],
-        credits: "Original synthetic demo lyrics".into(),
+        credits: "Words by The Imaginary Orchestra".into(),
         ..Default::default()
     }));
+    let demo_tracks = MockProvider.search_tracks(String::new()).await.unwrap();
     app.queue = (0..1000)
         .map(|i| Track {
             provider: crate::provider::ProviderId::Mock,
@@ -55,6 +66,9 @@ fn synthetic_render_review() {
         })
         .collect();
     for view in [View::Discover, View::Queue, View::NowPlaying] {
+        if view == View::NowPlaying {
+            app.queue = demo_tracks.iter().take(5).cloned().collect();
+        }
         app.view = view;
         app.selected = Some(0);
         let name = match app.view {
@@ -62,14 +76,18 @@ fn synthetic_render_review() {
             View::Queue => "queue",
             _ => "player",
         };
-        for (width, height) in [(40, 18), (60, 24), (100, 30)] {
+        let sizes = [(40, 18), (60, 24), (100, 30)];
+        for (width, height) in sizes
+            .into_iter()
+            .chain((app.view == View::NowPlaying).then_some((96, 20)))
+        {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             let mut table = TableState::default();
             let mut times = Vec::new();
             for _ in 0..100 {
                 let start = Instant::now();
                 terminal
-                    .draw(|f| render(f, &app, "Offline demo", &mut table))
+                    .draw(|f| render(f, &app, app.search_provider.name(), &mut table))
                     .unwrap();
                 times.push(start.elapsed().as_micros());
             }

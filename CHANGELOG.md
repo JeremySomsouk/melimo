@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 — Unreleased
+
+- Redesign the keyboard-first player with contextual controls, ink and mint
+  colors, a light theme, monochrome selection cues, and a responsive Up next
+  view beside synchronized lyrics.
+- Add a searchable command palette on `:` with actions for the current screen.
+- Put a song next with `E`, reorder queued entries with `J` and `K`, and
+  revisit up to 64 earlier tracks with `[`. Playing a single search result
+  keeps the upcoming queue.
+- Save one local queue and append it in a later session. The snapshot preserves
+  provider identity, order and duplicates. Offline demo saves use a separate slot.
+- Keep queue selection stable as playback advances or a background search finishes.
+- Fix the macOS build by keeping the native audio stream on its owning thread
+  while successive track workers share its mixer.
+
 ## 0.3.0 — Unreleased
 
 - Keep one lazily opened audio output device per terminal session, with recovery

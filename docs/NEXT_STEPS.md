@@ -1,3 +1,9 @@
+# v0.4.0 listening queue
+
+The release branch includes a searchable command palette, queue ordering and
+history, explicit local queue saving, and the redesigned player. Current
+validation and remaining hardware checks are in [RELEASE.md](RELEASE.md).
+
 # v0.3.0 continuous-audio increment
 
 - [x] Persistent lazy output device with next-attempt recovery after failure.
